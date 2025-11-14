@@ -25,7 +25,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	print(header)
 
 	if err != nil {
-		return
+		http.Error(w, "Error while grabbing File contents", http.StatusInternalServerError)
 	}
 
 	fileBytes, err := io.ReadAll(file)
@@ -34,8 +34,56 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error while reading file", http.StatusInternalServerError)
 	}
 
-	print(fileBytes)
+	chunks := chunkFiles(fileBytes)
 
+	if chunks == nil {
+		http.Error(w, "Error while splitting file into Chunks", http.StatusInternalServerError)
+	}
+
+	uploadChunksWithWorker(chunks)
+
+}
+
+func chunkFiles(bytes []byte) [][]byte {
+	var chunks [][]byte
+	var chunkSize int = 4 * 1024 * 1024
+
+	for i := 0; i < len(bytes); i += chunkSize {
+		end := i + chunkSize
+
+		if end > len(bytes) {
+			end = len(bytes)
+		}
+
+		chunks = append(chunks, bytes[i:end])
+	}
+
+	return chunks
+}
+
+func uploadChunksWithWorker(chunks [][]byte) {
+
+	chunkChan := make(chan []byte)
+
+	for w := 0; w < 8; w++ {
+		go func(id int) {
+			for chunk := range chunkChan {
+				uploadEachChunk(chunk)
+			}
+		}(w)
+	}
+
+	// send after workers exist
+
+	for _, chunk := range chunks {
+		chunkChan <- chunk
+	}
+
+	close(chunkChan)
+
+}
+
+func uploadEachChunk(chunk []byte) {
 	db, err := sql.Open("mysql", "root:1234@cloudly")
 
 	if err != nil {
@@ -45,5 +93,4 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	db.SetConnMaxLifetime(time.Minute * 3)
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(10)
-
 }
