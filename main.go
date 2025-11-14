@@ -9,6 +9,11 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+type Chunk struct {
+	Index int
+	Data  []byte
+}
+
 func main() {
 	http.ListenAndServe(":8080", nil)
 	http.HandleFunc("/upload", uploadFile)
@@ -39,8 +44,8 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	if chunks == nil {
 		http.Error(w, "Error while splitting file into Chunks", http.StatusInternalServerError)
 	}
-
-	uploadChunksWithWorker(chunks)
+	fileId := 10
+	uploadChunksWithWorker(chunks, fileId)
 
 }
 
@@ -61,36 +66,46 @@ func chunkFiles(bytes []byte) [][]byte {
 	return chunks
 }
 
-func uploadChunksWithWorker(chunks [][]byte) {
+func uploadChunksWithWorker(chunks [][]byte, fileId int) {
+	db, err := sql.Open("mysql", "root:1234@cloudly")
+	db.SetConnMaxLifetime(time.Minute * 3)
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
+	if err != nil {
+		panic(err)
+	}
 
-	chunkChan := make(chan []byte)
+	chunkChan := make(chan Chunk)
 
 	for w := 0; w < 8; w++ {
 		go func(id int) {
 			for chunk := range chunkChan {
-				uploadEachChunk(chunk)
+				uploadEachChunk(db, chunk.Data, chunk.Index, fileId)
 			}
 		}(w)
 	}
 
 	// send after workers exist
 
-	for _, chunk := range chunks {
-		chunkChan <- chunk
+	for i, data := range chunks {
+		chunkChan <- Chunk{Index: i, Data: data}
 	}
 
 	close(chunkChan)
 
 }
 
-func uploadEachChunk(chunk []byte) {
-	db, err := sql.Open("mysql", "root:1234@cloudly")
-
+func uploadEachChunk(db *sql.DB, chunk []byte, index int, fileId int) error {
+	stmt, err := db.Prepare("INSERT INTO file_chunks (file_id, chunk_index, data) VALUES (?, ?, ?)")
 	if err != nil {
-		panic(err)
+		return err
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(fileId, index, chunk)
+	if err != nil {
+		return err
 	}
 
-	db.SetConnMaxLifetime(time.Minute * 3)
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(10)
+	return nil
 }
